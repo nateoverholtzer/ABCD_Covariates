@@ -1,0 +1,220 @@
+---
+title: "ABCD_6.1_Covariates_Imaging"
+author: "L. Nate Overholtzer"
+date: "01/07/2026"
+output: html_document
+---
+This RMD provides the code that was used to compile a Master Imaging covariate sheet for the Adolescent Brain Cognitive Development Study (ABCD Study®). 
+The RMD was originally created by L. Nate Overholtzer for ABCD Study 5.0/5.1 Release, and updated on 12/10/25 and 01/07/2026 for ABCD 6.0/6.1 
+
+© 2026 L. Nate Overholtzer. Developed as part of the Herting Lab, University of Southern California. 
+Releases by L. Nate Overholtzer. 
+https://orcid.org/0000-0002-6260-2205 
+https://github.com/nateoverholtzer 
+
+Reuse and adaptation are permitted with attribution; please retain this header and document any modifications (date + summary), acknowledging L. Nate Overholtzer (ORCID: 0000-0002-6260-2205). For inquiries, contact: lnoverho@usc.edu 
+
+```{r setup, include=FALSE}
+dir_data <- "/Volumes/LABDOCS/PROJECTS/ABCD/Data/release6.1/dairc/rawdata/phenotype/"
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Packages}
+library(NBDCtools)
+library(tidyverse)
+library(knitr)
+```
+
+Read in all relevant TSVs. 
+TSVs were downloaded from ABCD Release 6.1 at https://nbdc-datashare.lassoinformatics.com/. 
+```{r Pull Variables, message=FALSE}
+
+            #ab_g_dyn 
+vars <-  c("ab_g_dyn__visit_dtt", "ab_g_dyn__visit_age", "ab_g_dyn__visit_type", "ab_g_dyn__visit_days", "ab_g_dyn__design_site",
+           "ab_g_dyn__design_mr__serial", "ab_g_dyn__design_mr__manufact", "ab_g_dyn__design_mr__software", "ab_g_dyn__design_mr__model", 
+           #mr_y_adm__info
+           "mr_y_adm__info_dt", "mr_y_adm__info_sessid", "mr_y_adm__info__dev_manufact", "mr_y_adm__info__dev_model", "mr_y_adm__info__dev_serial",
+           "mr_y_adm__info__dev__sftw_ver", 
+           #mri_y_qc__clfind
+           "mr_y_qc__clfind_score", 
+           #mr_y_qc__incl 
+           "mr_y_qc__incl__smri__t1_indicator", "mr_y_qc__incl__smri__t2_indicator", "mr_y_qc__incl__dmri_indicator", "mr_y_qc__incl__rsfmri_indicator",
+           "mr_y_qc__incl__tfmri__mid_indicator", "mr_y_qc__incl__tfmri__nback_indicator", "mr_y_qc__incl__tfmri__sst_indicator",
+           #mr_y_qc__mot
+           "mr_y_qc__mot__dmri__mot_mean", "mr_y_qc__mot__rsfmri__mot_mean", 
+           #nc_y_ehis
+           "nc_y_ehis_score"
+           )
+mr_master_covariates_6.1 <- create_dataset_abcd(dir_data, vars ,format = "tsv")
+```
+
+```{r Clinical Findings 3 Year Problem}
+table(mr_master_covariates_6.1$session_id, mr_master_covariates_6.1$mr_y_qc__clfind_score)
+```
+Consistent with 5.0/5.1, there are clinical finding scores present at 3 years. This issues is due to the MRS substudy and can be removed according to ABCD.  
+
+```{r}
+mr_master_covariates_6.1 <- mr_master_covariates_6.1 %>% filter(session_id%in%c("ses-00A", "ses-02A", "ses-04A", "ses-06A"))
+```
+
+Verifying consistencies of ab_g_dyn and mr_y_adm__info for scanner parameters 
+
+```{r Scanner Parameters Check}
+mr_master_covariates_6.1 %>%
+  summarize(n_matches = sum(ab_g_dyn__design_mr__serial != mr_y_adm__info__dev_serial, na.rm = TRUE))
+
+mr_master_covariates_6.1 %>%
+  summarize(n_matches = sum(ab_g_dyn__design_mr__manufact != mr_y_adm__info__dev_manufact, na.rm = TRUE))
+
+mr_master_covariates_6.1 %>%
+  summarize(n_matches = sum(ab_g_dyn__design_mr__software != mr_y_adm__info__dev__sftw_ver , na.rm = TRUE))
+
+mr_master_covariates_6.1 %>%
+  summarize(n_matches = sum(ab_g_dyn__design_mr__model != mr_y_adm__info__dev_model , na.rm = TRUE))
+
+```
+Confirmed there are no inconsistencies between the ab_g_dyn and mr_y_adm__info. We will drop the corresponding ab_g_dyn. 
+
+```{r}
+mr_master_covariates_6.1 <- mr_master_covariates_6.1 %>%
+  select(-c(ab_g_dyn__design_mr__serial,
+                   ab_g_dyn__design_mr__manufact,
+                   ab_g_dyn__design_mr__software,
+                   ab_g_dyn__design_mr__model))
+
+mr_master_covariates_6.1 <- mr_master_covariates_6.1 %>% 
+  filter(!is.na(mr_y_adm__info_dt))
+```
+
+Handedness was tested at Baseline and Year 4. 
+Create Handedness Score by Time Point
+Create Handedness Flag which equals TRUE when handedness baseline does not equal handedness four year. If there is no four year assessment of handedness, then it is ignored. If handedness was not assessed at baseline, then it will come up as NA. 
+```{r Handedness}
+
+library(dplyr)
+library(stringr)
+
+mr_master_covariates_6.1 <- mr_master_covariates_6.1 %>%
+  mutate(nc_y_ehis_score = factor(nc_y_ehis_score,
+                           levels = c(1, 2, 3),
+                           labels = c("Right", "Left", "Mixed")))
+
+table(mr_master_covariates_6.1$session_id, mr_master_covariates_6.1$nc_y_ehis_score)
+
+# add numeric session index (00, 04, …)
+by_sess <- mr_master_covariates_6.1 %>%
+  mutate(sess_num = as.integer(str_extract(session_id, "(?<=ses-)\\d+")))
+
+# baseline (ses-00A)
+baseline <- by_sess %>%
+  filter(sess_num == 0) %>%
+  distinct(participant_id, .keep_all = TRUE) %>%
+  transmute(participant_id,
+            handedness_baseline = nc_y_ehis_score)
+
+# 4-year (ses-04A)
+four_year <- by_sess %>%
+  filter(sess_num == 4) %>%
+  arrange(participant_id, is.na(nc_y_ehis_score)) %>%
+  distinct(participant_id, .keep_all = TRUE) %>%
+  transmute(participant_id,
+            handedness_4year = nc_y_ehis_score)
+
+# longitudinal = latest recorded visit (including baseline if no later visit)
+latest_any <- by_sess %>%
+  filter(!is.na(nc_y_ehis_score)) %>%
+  group_by(participant_id) %>%
+  slice_max(sess_num, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  transmute(participant_id,
+            handedness_longitudinal = nc_y_ehis_score,
+            handedness_session_longitudinal = session_id)
+
+# combine + flag: TRUE when baseline != longitudinal; NA if baseline missing
+handedness <- baseline %>%
+  full_join(four_year, by = "participant_id") %>%
+  full_join(latest_any, by = "participant_id") %>%
+  mutate(
+    handedness_flag = case_when(
+      is.na(handedness_longitudinal) ~ NA,                      # can't without w timepoints
+      TRUE ~ handedness_baseline != handedness_longitudinal     # TRUE when they differ
+    )
+  )
+
+mr_master_covariates_6.1 <- mr_master_covariates_6.1 %>%
+  dplyr::left_join(handedness, by = "participant_id") %>% 
+  select(-nc_y_ehis_score)
+
+
+```
+
+```{r MRI Date - Age Discrepancy }
+mr_master_covariates_6.1 <- mr_master_covariates_6.1 %>%
+  mutate(
+    sess_date  = as.Date(ab_g_dyn__visit_dtt),
+    dates_match = case_when(
+      is.na(mr_y_adm__info_dt) | is.na(ab_g_dyn__visit_dtt) ~ NA,
+      TRUE ~ sess_date == mr_y_adm__info_dt
+    ),
+    sess_mri_day_diff = as.integer(mr_y_adm__info_dt - sess_date)
+  ) %>% 
+  select(-sess_date) %>%
+  mutate(
+    flag_30days = case_when(
+      is.na(sess_mri_day_diff)        ~ NA,          # keep NA if we can't compute
+      abs(sess_mri_day_diff) > 30L    ~ TRUE,        # more than 30 days apart
+      TRUE                            ~ FALSE
+    )
+  )
+
+table(mr_master_covariates_6.1$session_id, mr_master_covariates_6.1$flag_30days)
+```
+
+
+```{r sess_mri_day_diff}
+mr_master_covariates_6.1 %>%
+  filter(flag_30days) %>%
+  mutate(
+    sess_mri_day_diff = as.numeric(sess_mri_day_diff),
+    bin_10 = cut(
+      sess_mri_day_diff,
+      breaks = seq(
+        floor(min(sess_mri_day_diff, na.rm = TRUE) / 10) * 10,
+        ceiling(max(sess_mri_day_diff, na.rm = TRUE) / 10) * 10,
+        by = 10
+      ),
+      include.lowest = TRUE, right = FALSE
+    )
+  ) %>%
+  count(bin_10, name = "n") %>%
+  mutate(pct = n / sum(n)) %>%
+  arrange(bin_10)
+```
+
+
+
+```{r Formatting}
+sess_levels <- c("ses-00A","ses-01A","ses-02A","ses-03A","ses-04A","ses-05A","ses-06A")
+mr_master_covariates_6.1 <- mr_master_covariates_6.1 %>% 
+  mutate(session_id = factor(session_id, levels = sess_levels, ordered = TRUE))
+
+mr_master_covariates_6.1 <- mr_master_covariates_6.1 %>%
+  mutate(
+    across(c(mr_y_adm__info__dev_manufact,
+             mr_y_adm__info__dev_model,
+             mr_y_adm__info__dev_serial,
+             mr_y_adm__info__dev__sftw_ver),
+           as.factor)
+  )
+
+skimr::skim(mr_master_covariates_6.1)
+```
+
+
+```{r Save Data}
+saveRDS(mr_master_covariates_6.1, "ABCD_6.1_Covariates_Imaging.RDS")
+write.csv(mr_master_covariates_6.1, "ABCD_6.1_Covariates_Imaging.csv", row.names = FALSE)
+```
+
+
+
